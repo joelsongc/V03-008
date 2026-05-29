@@ -1,2 +1,731 @@
-# V03-008
-Test
+//---------------------------------------------------------
+// BOBINADEIRA V03 - 008
+// START + FREIO + FALHA INVERSOR
+// PIC18F252
+//---------------------------------------------------------
+
+#include <18f252.h>
+
+#fuses HS,NOWDT,NOLVP,NOPROTECT,NOBROWNOUT,NOPUT
+#use delay(clock=4000000)
+
+//---------------------------------------------------------
+// REGISTRADORES
+//---------------------------------------------------------
+
+#byte TRISA  = 0x92
+#byte TRISB  = 0x93
+#byte TRISC  = 0x94
+
+#byte PORTA  = 0xF80
+#byte PORTB  = 0xF81
+#byte PORTC  = 0xF82
+
+#byte ADCON0 = 0xFC2
+#byte ADCON1 = 0xFC1
+#byte CMCON  = 0xFB4
+
+//---------------------------------------------------------
+// I2C
+//---------------------------------------------------------
+
+#use i2c(MASTER,SDA=PIN_C4,SCL=PIN_C3,SLOW)
+
+//---------------------------------------------------------
+// LCD
+//---------------------------------------------------------
+
+#include <lcd_i2c.c>
+
+//---------------------------------------------------------
+// PORTA
+//---------------------------------------------------------
+
+#bit MPF4   = PORTA.0
+#bit MPF3   = PORTA.1
+#bit MPF2   = PORTA.2
+#bit MPF1   = PORTA.3
+
+#bit ONOFF  = PORTA.4
+#bit FREIO  = PORTA.5
+
+//---------------------------------------------------------
+// PORTB
+//---------------------------------------------------------
+
+#bit PROG   = PORTB.0
+#bit UP     = PORTB.1
+#bit DW     = PORTB.2
+#bit ENTER  = PORTB.3
+
+#bit FAL    = PORTB.4
+#bit POSI   = PORTB.5
+
+//---------------------------------------------------------
+// PORTC
+//---------------------------------------------------------
+
+#bit STRT   = PORTC.0
+#bit TORQUE = PORTC.1
+#bit SPEED  = PORTC.2
+
+#bit OE     = PORTC.5
+
+#bit SB     = PORTC.6
+#bit SA     = PORTC.7
+
+//---------------------------------------------------------
+// TECLAS
+//---------------------------------------------------------
+
+#define KEY_PROG    0x01
+#define KEY_UP      0x02
+#define KEY_DW      0x04
+#define KEY_ENTER   0x08
+
+int8 key_now   = 0;
+int8 key_old   = 0;
+int8 key_press = 0;
+
+//---------------------------------------------------------
+// MENU
+//---------------------------------------------------------
+
+int8 menu_nivel = 0;
+
+//---------------------------------------------------------
+// BOBINA
+//---------------------------------------------------------
+
+int8 bobina_atual = 1;
+
+//---------------------------------------------------------
+// TIMER LCD
+//---------------------------------------------------------
+
+int16 refresh_lcd = 0;
+
+//---------------------------------------------------------
+// CONTADOR
+//---------------------------------------------------------
+
+int16 contador_espiras = 0;
+
+//---------------------------------------------------------
+// CONTROLE MÁQUINA
+//---------------------------------------------------------
+
+int8 maquina_run = 0;
+
+int8 falha_inversor = 0;
+
+//---------------------------------------------------------
+// SENSOR SA
+//---------------------------------------------------------
+
+int8 sa_old = 0;
+
+//---------------------------------------------------------
+// ESTRUTURA RECEITA
+//---------------------------------------------------------
+
+typedef struct {
+
+   int16 espiras;
+
+   int8 bitola;
+
+   int16 inicio;
+
+   int16 fim;
+
+   int8 velocidade;
+
+} RECEITA;
+
+//---------------------------------------------------------
+// RECEITAS
+//---------------------------------------------------------
+
+RECEITA bobina[3];
+
+//---------------------------------------------------------
+// CACHE DISPLAY
+//---------------------------------------------------------
+
+int8 old_menu_nivel = 255;
+
+int8 old_bobina_atual = 255;
+
+int16 old_espiras = 65535;
+
+int8 old_bitola = 255;
+
+int16 old_inicio = 65535;
+
+int16 old_fim = 65535;
+
+int8 old_velocidade = 255;
+
+int16 old_contador = 65535;
+
+int8 old_run = 255;
+
+int8 old_falha = 255;
+
+//---------------------------------------------------------
+// HARDWARE
+//---------------------------------------------------------
+
+void hardware_init(){
+
+   ADCON1 = 0x0F;
+
+   CMCON = 0x07;
+
+   TRISA = 0x00;
+
+   TRISB = 0b00111111;
+
+   TRISC = 0b11011001;
+
+   PORTA = 0x00;
+   PORTB = 0x00;
+   PORTC = 0x00;
+
+   //------------------------------------------------------
+   // FREIO INICIA ACIONADO
+   //------------------------------------------------------
+
+   FREIO = 1;
+}
+
+//---------------------------------------------------------
+// RECEITAS
+//---------------------------------------------------------
+
+void receitas_init(){
+
+   bobina[1].espiras = 0;
+   bobina[1].bitola = 16;
+   bobina[1].inicio = 0;
+   bobina[1].fim = 0;
+   bobina[1].velocidade = 1;
+
+   bobina[2].espiras = 0;
+   bobina[2].bitola = 16;
+   bobina[2].inicio = 0;
+   bobina[2].fim = 0;
+   bobina[2].velocidade = 1;
+}
+
+//---------------------------------------------------------
+// INVALIDA CACHE
+//---------------------------------------------------------
+
+void invalidate_cache(){
+
+   old_menu_nivel = 255;
+
+   old_bobina_atual = 255;
+
+   old_espiras = 65535;
+
+   old_bitola = 255;
+
+   old_inicio = 65535;
+
+   old_fim = 65535;
+
+   old_velocidade = 255;
+
+   old_contador = 65535;
+
+   old_run = 255;
+
+   old_falha = 255;
+}
+
+//---------------------------------------------------------
+// LCD STARTUP
+//---------------------------------------------------------
+
+void lcd_startup(){
+
+   lcd_init();
+
+   delay_ms(100);
+
+   lcd_putc("\f");
+
+   delay_ms(50);
+
+   lcd_gotoxy(1,1);
+
+   delay_ms(5);
+
+   lcd_putc("BOBINADEIRA");
+
+   delay_ms(5);
+
+   lcd_gotoxy(1,2);
+
+   delay_ms(5);
+
+   lcd_putc("V03 - 008");
+
+   delay_ms(2000);
+
+   lcd_putc("\f");
+
+   delay_ms(50);
+
+   invalidate_cache();
+}
+
+//---------------------------------------------------------
+// LCD RECOVERY
+//---------------------------------------------------------
+
+void lcd_recovery(){
+
+   lcd_init();
+
+   delay_ms(100);
+
+   lcd_putc("\f");
+
+   delay_ms(50);
+
+   invalidate_cache();
+}
+
+//---------------------------------------------------------
+// TECLADO
+//---------------------------------------------------------
+
+void scan_keyboard(){
+
+   key_old = key_now;
+
+   key_now = 0;
+
+   if(PROG == 0)
+      key_now |= KEY_PROG;
+
+   if(UP == 0)
+      key_now |= KEY_UP;
+
+   if(DW == 0)
+      key_now |= KEY_DW;
+
+   if(ENTER == 0)
+      key_now |= KEY_ENTER;
+
+   key_press = key_now & (~key_old);
+}
+
+//---------------------------------------------------------
+// MENU
+//---------------------------------------------------------
+
+void task_menu(){
+
+   //------------------------------------------------------
+   // PROG
+   //------------------------------------------------------
+
+   if(key_press & KEY_PROG){
+
+      //---------------------------------------------------
+      // DESLIGA MÁQUINA
+      //---------------------------------------------------
+
+      maquina_run = 0;
+
+      ONOFF = 0;
+
+      FREIO = 1;
+
+      //---------------------------------------------------
+      // MENU
+      //---------------------------------------------------
+
+      menu_nivel++;
+
+      if(menu_nivel > 6)
+         menu_nivel = 1;
+   }
+
+   //------------------------------------------------------
+   // ENTER
+   //------------------------------------------------------
+
+   if(key_press & KEY_ENTER){
+
+      //---------------------------------------------------
+      // DESLIGA MÁQUINA
+      //---------------------------------------------------
+
+      maquina_run = 0;
+
+      ONOFF = 0;
+
+      FREIO = 1;
+
+      //---------------------------------------------------
+      // RETORNA OPERAÇÃO
+      //---------------------------------------------------
+
+      menu_nivel = 0;
+   }
+
+   //------------------------------------------------------
+   // UP
+   //------------------------------------------------------
+
+   if(key_press & KEY_UP){
+
+      switch(menu_nivel){
+
+         case 1:
+
+            if(bobina_atual < 2)
+               bobina_atual++;
+
+         break;
+
+         case 2:
+
+            if(bobina[bobina_atual].espiras < 9999)
+               bobina[bobina_atual].espiras++;
+
+         break;
+
+         case 3:
+
+            if(bobina[bobina_atual].bitola < 32)
+               bobina[bobina_atual].bitola++;
+
+         break;
+
+         case 4:
+
+            if(bobina[bobina_atual].inicio < 5000)
+               bobina[bobina_atual].inicio++;
+
+         break;
+
+         case 5:
+
+            if(bobina[bobina_atual].fim < 5000)
+               bobina[bobina_atual].fim++;
+
+         break;
+
+         case 6:
+
+            if(bobina[bobina_atual].velocidade < 10)
+               bobina[bobina_atual].velocidade++;
+
+         break;
+      }
+   }
+
+   //------------------------------------------------------
+   // DW
+   //------------------------------------------------------
+
+   if(key_press & KEY_DW){
+
+      switch(menu_nivel){
+
+         case 1:
+
+            if(bobina_atual > 1)
+               bobina_atual--;
+
+         break;
+
+         case 2:
+
+            if(bobina[bobina_atual].espiras > 0)
+               bobina[bobina_atual].espiras--;
+
+         break;
+
+         case 3:
+
+            if(bobina[bobina_atual].bitola > 16)
+               bobina[bobina_atual].bitola--;
+
+         break;
+
+         case 4:
+
+            if(bobina[bobina_atual].inicio > 0)
+               bobina[bobina_atual].inicio--;
+
+         break;
+
+         case 5:
+
+            if(bobina[bobina_atual].fim > 0)
+               bobina[bobina_atual].fim--;
+
+         break;
+
+         case 6:
+
+            if(bobina[bobina_atual].velocidade > 1)
+               bobina[bobina_atual].velocidade--;
+
+         break;
+      }
+   }
+}
+
+//---------------------------------------------------------
+// START + FALHA
+//---------------------------------------------------------
+
+void task_start(){
+
+   //------------------------------------------------------
+   // FALHA INVERSOR
+   //------------------------------------------------------
+
+   if(FAL == 0){
+
+      falha_inversor = 1;
+
+      maquina_run = 0;
+
+      ONOFF = 0;
+
+      FREIO = 1;
+
+      return;
+   }
+
+   //------------------------------------------------------
+   // FALHA NORMALIZADA
+   //------------------------------------------------------
+
+   falha_inversor = 0;
+
+   //------------------------------------------------------
+   // START
+   //------------------------------------------------------
+
+   if(menu_nivel == 0){
+
+      //---------------------------------------------------
+      // START MOMENTÂNEO
+      //---------------------------------------------------
+
+      if(STRT == 0){
+
+         //------------------------------------------------
+         // HABILITA RUN
+         //------------------------------------------------
+
+         maquina_run = 1;
+
+         //------------------------------------------------
+         // LIGA INVERSOR
+         //------------------------------------------------
+
+         ONOFF = 1;
+
+         //------------------------------------------------
+         // LIBERA FREIO
+         //------------------------------------------------
+
+         FREIO = 0;
+      }
+   }
+}
+
+//---------------------------------------------------------
+// CONTAGEM
+//---------------------------------------------------------
+
+void task_encoder(){
+
+   //------------------------------------------------------
+   // SOMENTE EM RUN
+   //------------------------------------------------------
+
+   if(maquina_run == 0){
+
+      sa_old = SA;
+
+      return;
+   }
+
+   //------------------------------------------------------
+   // BORDA DE SUBIDA
+   //------------------------------------------------------
+
+   if(SA == 1 && sa_old == 0){
+
+      contador_espiras++;
+
+      if(contador_espiras > 9999)
+         contador_espiras = 9999;
+   }
+
+   //------------------------------------------------------
+   // MEMÓRIA
+   //------------------------------------------------------
+
+   sa_old = SA;
+}
+
+//---------------------------------------------------------
+// DISPLAY
+//---------------------------------------------------------
+
+void task_display(){
+
+   //------------------------------------------------------
+   // AUTO RECOVERY LCD
+   //------------------------------------------------------
+
+   refresh_lcd++;
+
+   if(refresh_lcd >= 500){
+
+      refresh_lcd = 0;
+
+      lcd_recovery();
+   }
+
+   //------------------------------------------------------
+   // MODO OPERAÇÃO
+   //------------------------------------------------------
+
+   if(menu_nivel == 0){
+
+      if(old_menu_nivel == menu_nivel &&
+         old_contador == contador_espiras &&
+         old_run == maquina_run &&
+         old_falha == falha_inversor)
+         return;
+
+      old_menu_nivel = menu_nivel;
+
+      old_contador = contador_espiras;
+
+      old_run = maquina_run;
+
+      old_falha = falha_inversor;
+
+      //---------------------------------------------------
+      // LINHA 1
+      //---------------------------------------------------
+
+      lcd_gotoxy(1,1);
+
+      delay_ms(5);
+
+      lcd_putc("ENROLAR ESPIRA");
+
+      delay_ms(5);
+
+      //---------------------------------------------------
+      // LINHA 2
+      //---------------------------------------------------
+
+      lcd_gotoxy(1,2);
+
+      delay_ms(5);
+
+      //---------------------------------------------------
+      // FALHA
+      //---------------------------------------------------
+
+      if(falha_inversor == 1){
+
+         lcd_putc("FALHA INVERSOR");
+
+         delay_ms(5);
+
+         return;
+      }
+
+      //---------------------------------------------------
+      // CONTADOR
+      //---------------------------------------------------
+
+      printf(lcd_putc,"%04Lu            ",
+             contador_espiras);
+
+      delay_ms(5);
+
+      return;
+   }
+
+   //------------------------------------------------------
+   // MENU 1
+   //------------------------------------------------------
+
+   if(menu_nivel == 1){
+
+      if(old_menu_nivel == menu_nivel &&
+         old_bobina_atual == bobina_atual)
+         return;
+
+      old_menu_nivel = menu_nivel;
+
+      old_bobina_atual = bobina_atual;
+
+      lcd_gotoxy(1,1);
+
+      delay_ms(5);
+
+      lcd_putc("BOBINA         ");
+
+      delay_ms(5);
+
+      lcd_gotoxy(1,2);
+
+      delay_ms(5);
+
+      printf(lcd_putc,"%u               ",
+             bobina_atual);
+
+      delay_ms(5);
+
+      return;
+   }
+}
+
+//---------------------------------------------------------
+// MAIN
+//---------------------------------------------------------
+
+void main(){
+
+   hardware_init();
+
+   receitas_init();
+
+   lcd_startup();
+
+   while(TRUE){
+
+      scan_keyboard();
+
+      task_menu();
+
+      task_start();
+
+      task_encoder();
+
+      task_display();
+
+      delay_ms(10);
+   }
+}
